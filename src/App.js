@@ -4,6 +4,7 @@ import {
   getFirestore,
   collection,
   doc,
+  getDoc,
   getDocs,
   setDoc,
 } from "firebase/firestore";
@@ -22,7 +23,8 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
-// Timetable with lunch column (1-2 is lunch, unclickable)
+// Timetable and helper functions
+
 const timetableData = [
   {
     day: "Monday",
@@ -56,7 +58,6 @@ const timetableData = [
   },
 ];
 
-// Semester totals
 const totalLectures = {
   DSA: 42,
   CN: 42,
@@ -75,7 +76,6 @@ const totalLabs = {
   HSM: 0,
 };
 
-// Helpers
 function isLab(subject) {
   return subject.toUpperCase().includes("LAB");
 }
@@ -118,79 +118,89 @@ function calcCanMissDynamic(present, conducted, total) {
 }
 
 export default function App() {
-  const [attendanceData, setAttendanceData] = useState({}); // per date-keyed object of attendance
+  const [username, setUsername] = useState("");
+  const [inputName, setInputName] = useState("");
+  const [attendanceData, setAttendanceData] = useState({});
   const [selectedDate, setSelectedDate] = useState(() => {
     const d = new Date();
     return d.toISOString().slice(0, 10);
   });
-  const [allDatesData, setAllDatesData] = useState({}); // all dates' attendance aggregated
+  const [allDatesData, setAllDatesData] = useState({});
   const [loading, setLoading] = useState(false);
 
-  const selectedDayName = getDayName(selectedDate);
-  const timetableDay = timetableData.find((row) => row.day === selectedDayName) || null;
-
-  // Fetch ALL attendance docs once on mount
   useEffect(() => {
-    async function fetchAllAttendance() {
+    if (!username) return;
+
+    async function fetchUserAttendance() {
       setLoading(true);
       const colRef = collection(db, "attendance");
       const snapshot = await getDocs(colRef);
       const allData = {};
+
       snapshot.forEach((doc) => {
         allData[doc.id] = doc.data();
       });
-      console.log("Fetched all attendance data:", allData); // Debug
-      setAllDatesData(allData);
+
+      const filteredData = {};
+      Object.entries(allData).forEach(([date, dateData]) => {
+        if (dateData[username]) {
+          filteredData[date] = dateData[username];
+        } else {
+          filteredData[date] = {};
+        }
+      });
+
+      setAllDatesData(filteredData);
       setLoading(false);
     }
-    fetchAllAttendance();
-  }, []);
 
-  // Load attendance for selected date (for editing)
+    fetchUserAttendance();
+  }, [username]);
+
   useEffect(() => {
     if (!selectedDate) return;
 
     if (allDatesData[selectedDate]) {
-      console.log("Loading attendance for date:", selectedDate, allDatesData[selectedDate]); // Debug
       setAttendanceData(allDatesData[selectedDate]);
     } else {
-      console.log("No attendance data for date:", selectedDate);
       setAttendanceData({});
     }
   }, [selectedDate, allDatesData]);
 
-  // Save selectedDate attendanceData after changes with debounce & update allDatesData for summary
   useEffect(() => {
-    if (!selectedDate) return;
+    if (!selectedDate || !username) return;
+
     const timeoutId = setTimeout(async () => {
       setLoading(true);
-      console.log("Saving attendanceData for date", selectedDate, attendanceData); // Debug
-      await setDoc(doc(db, "attendance", selectedDate), attendanceData);
 
-      // Update allDatesData so summary updates immediately
+      const docRef = doc(db, "attendance", selectedDate);
+      const docSnap = await getDoc(docRef);
+      let prevData = {};
+      if (docSnap.exists()) {
+        prevData = docSnap.data();
+      }
+
+      const newData = {
+        ...prevData,
+        [username]: attendanceData,
+      };
+
+      await setDoc(docRef, newData);
       setAllDatesData((prev) => ({
         ...prev,
         [selectedDate]: attendanceData,
       }));
-
       setLoading(false);
     }, 500);
+
     return () => clearTimeout(timeoutId);
-  }, [attendanceData, selectedDate]);
+  }, [attendanceData, selectedDate, username]);
 
-  // Log state changes
-  useEffect(() => {
-    console.log("attendanceData changed:", attendanceData);
-  }, [attendanceData]);
-
-  // Toggle attendance cell
   function toggleCell(dayIndex, slotIndex) {
     const key = `${dayIndex}-${slotIndex}`;
     const current = attendanceData[key] || "unmarked";
     const next =
       current === "unmarked" ? "present" : current === "present" ? "absent" : "unmarked";
-
-    console.log(`Toggling cell ${key}: ${current} -> ${next}`); // Debug
 
     const daySlots = timetableData[dayIndex].slots;
     if (isLab(daySlots[slotIndex])) {
@@ -213,7 +223,6 @@ export default function App() {
     }
   }
 
-  // Aggregate attendance from ALL dates to get summary totals
   function getSummary() {
     const summary = {};
 
@@ -251,6 +260,59 @@ export default function App() {
   }
 
   const summary = getSummary();
+  const selectedDayName = getDayName(selectedDate);
+  const timetableDay = timetableData.find((row) => row.day === selectedDayName) || null;
+
+  if (!username) {
+    return (
+      <div
+        style={{
+          maxWidth: 400,
+          margin: "auto",
+          padding: 20,
+          fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
+          textAlign: "center",
+        }}
+      >
+        <h2>Please enter your name</h2>
+        <input
+          type="text"
+          value={inputName}
+          onChange={(e) => setInputName(e.target.value)}
+          placeholder="Your name"
+          style={{
+            width: "100%",
+            padding: "10px",
+            fontSize: 16,
+            borderRadius: 4,
+            border: "1px solid #ccc",
+            marginBottom: 10,
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && inputName.trim()) {
+              setUsername(inputName.trim());
+            }
+          }}
+        />
+        <button
+          onClick={() => {
+            if (inputName.trim()) setUsername(inputName.trim());
+          }}
+          style={{
+            padding: "10px 20px",
+            fontSize: 16,
+            borderRadius: 4,
+            border: "none",
+            backgroundColor: "#1976d2",
+            color: "white",
+            cursor: "pointer",
+          }}
+        >
+          Continue
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -261,11 +323,32 @@ export default function App() {
         fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
       }}
     >
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+        <button
+          onClick={() => {
+            setUsername("");
+            setInputName("");
+            setAttendanceData({});
+            setAllDatesData({});
+          }}
+          style={{
+            padding: "8px 16px",
+            backgroundColor: "#e53935",
+            color: "white",
+            border: "none",
+            borderRadius: 4,
+            cursor: "pointer",
+            fontWeight: "bold",
+          }}
+        >
+          Log Out
+        </button>
+      </div>
+
       <h1 style={{ textAlign: "center", color: "#222", marginBottom: 20 }}>
         Semester Attendance Tracker
       </h1>
 
-      {/* Date Picker */}
       <div style={{ marginBottom: 20, textAlign: "center" }}>
         <label style={{ fontWeight: "bold", fontSize: 16 }}>
           Select Date:{" "}
@@ -278,6 +361,9 @@ export default function App() {
               fontSize: 16,
               borderRadius: 4,
               border: "1px solid #ccc",
+              width: "200px",
+              boxSizing: "border-box",
+              cursor: "pointer",
             }}
           />
         </label>
@@ -295,21 +381,21 @@ export default function App() {
           borderCollapse: "collapse",
           background: "white",
           marginBottom: 30,
-          border: "1px solid red", // Debug red border for visibility
+          border: "1px solid red",
         }}
       >
         <thead>
           <tr style={{ backgroundColor: "#333", color: "white" }}>
             <th>Day</th>
-            <th>8-9</th>
-            <th>9-10</th>
-            <th>10-11</th>
-            <th>11-12</th>
-            <th>12-1</th>
-            <th>1-2</th>
-            <th>2-3</th>
-            <th>3-4</th>
-            <th>4-5</th>
+            <th data-label="8-9">8-9</th>
+            <th data-label="9-10">9-10</th>
+            <th data-label="10-11">10-11</th>
+            <th data-label="11-12">11-12</th>
+            <th data-label="12-1">12-1</th>
+            <th data-label="1-2">1-2</th>
+            <th data-label="2-3">2-3</th>
+            <th data-label="3-4">3-4</th>
+            <th data-label="4-5">4-5</th>
           </tr>
         </thead>
         <tbody>
@@ -322,6 +408,7 @@ export default function App() {
                   background: "#eee",
                   fontWeight: "bold",
                 }}
+                data-label="Day"
               >
                 {timetableDay.day}
               </td>
@@ -343,6 +430,7 @@ export default function App() {
                         userSelect: "none",
                         fontStyle: "italic",
                       }}
+                      data-label="Lunch"
                     >
                       Lunch
                     </td>
@@ -351,7 +439,6 @@ export default function App() {
 
                 const isLabSession = isLab(subject);
 
-                // Handle colspan for lab sessions
                 if (
                   isLabSession &&
                   slotIdx + 1 < timetableDay.slots.length &&
@@ -359,9 +446,6 @@ export default function App() {
                 ) {
                   const key = `${dayIdx}-${slotIdx}`;
                   const status = attendanceData[key] || "unmarked";
-
-                  // Debug console
-                  console.log(`Rendering lab cell ${key} with status: ${status}`);
 
                   return (
                     <td
@@ -380,6 +464,7 @@ export default function App() {
                         toggleCell(dayIdx, slotIdx);
                         toggleCell(dayIdx, slotIdx + 1);
                       }}
+                      data-label={subject}
                     >
                       {subject}
                     </td>
@@ -389,14 +474,10 @@ export default function App() {
                   slotIdx > 0 &&
                   timetableDay.slots[slotIdx - 1] === subject
                 ) {
-                  // Skip second cell of lab (colspan)
                   return null;
                 } else {
                   const key = `${dayIdx}-${slotIdx}`;
                   const status = attendanceData[key] || "unmarked";
-
-                  // Debug console
-                  console.log(`Rendering cell ${key} with status: ${status}`);
 
                   return (
                     <td
@@ -410,6 +491,7 @@ export default function App() {
                         userSelect: "none",
                       }}
                       onClick={() => subject && toggleCell(dayIdx, slotIdx)}
+                      data-label={subject || "Free"}
                     >
                       {subject}
                     </td>
@@ -442,11 +524,11 @@ export default function App() {
       >
         <thead style={{ backgroundColor: "#1976d2", color: "white" }}>
           <tr>
-            <th>Subject</th>
-            <th>Lecture Attendance</th>
-            <th>Lecture Can Miss</th>
-            <th>Lab Attendance</th>
-            <th>Lab Can Miss</th>
+            <th data-label="Subject">Subject</th>
+            <th data-label="Lecture Attendance">Lecture Attendance</th>
+            <th data-label="Lecture Can Miss">Lecture Can Miss</th>
+            <th data-label="Lab Attendance">Lab Attendance</th>
+            <th data-label="Lab Can Miss">Lab Can Miss</th>
           </tr>
         </thead>
         <tbody>
@@ -468,6 +550,7 @@ export default function App() {
             return (
               <tr key={subject} style={{ textAlign: "center" }}>
                 <td
+                  data-label="Subject"
                   style={{
                     borderBottom: "1px solid #ddd",
                     padding: 10,
@@ -476,14 +559,14 @@ export default function App() {
                 >
                   {subject}
                 </td>
-                <td>
+                <td data-label="Lecture Attendance">
                   {data.lecture.present} / {data.lecture.total}
                 </td>
-                <td>{lecCanMiss}</td>
-                <td>
+                <td data-label="Lecture Can Miss">{lecCanMiss}</td>
+                <td data-label="Lab Attendance">
                   {data.lab.present} / {data.lab.total}
                 </td>
-                <td>{labCanMiss}</td>
+                <td data-label="Lab Can Miss">{labCanMiss}</td>
               </tr>
             );
           })}
